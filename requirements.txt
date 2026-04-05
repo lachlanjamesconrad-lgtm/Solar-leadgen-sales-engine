@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+plotly
+numpy-financial
+fpdf2
+google-genai
