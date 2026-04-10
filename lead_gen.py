@@ -4,6 +4,15 @@ import numpy as np
 import plotly.graph_objects as go
 from supabase import create_client, Client
 
+if "payment" in st.query_params and st.query_params["payment"] == "success":
+    st.success("🎉 Payment Successful! Your Engineering Audit is confirmed.")
+    st.markdown("### Next Steps:")
+    st.write("We have received your $149 payment. To get started, please forward your Energex Smart Meter data and your solar quotes to **[Your Email Here]**.")
+    st.info("Haven't got your Energex data yet? Watch this 60-second video on how to download it: [Link to your Loom Video]")
+    
+    # Stop the rest of the app from loading so they don't see the calculator
+    st.stop()
+
 # -----------------------------------------------------------------------------
 # 1. CONFIGURATION & UI SETUP
 # -----------------------------------------------------------------------------
