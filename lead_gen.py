@@ -4,6 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 from supabase import create_client, Client
 
+
+
 if "payment" in st.query_params and st.query_params["payment"] == "success":
     st.success("🎉 Payment Successful! Your Engineering Audit is confirmed.")
     st.markdown("### Next Steps:")
@@ -18,6 +20,7 @@ if "payment" in st.query_params and st.query_params["payment"] == "success":
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="My Solar Plan | Free Simulator", page_icon="☀️", layout="wide")
 
+st.title("My Solar Plan")
 st.title("☀️ Free Solar Simulator")
 st.markdown("Discover your baseline solar potential. No math required.")
 
