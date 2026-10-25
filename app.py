@@ -82,7 +82,7 @@ def load_and_clean_data(file):
                 df = pd.read_csv(StringIO(content))
                 df.columns = df.columns.str.strip()
                 
-                desc_col = next((c for c in df.columns if c in ['RateTypeDescription', 'Rate Type', 'RegisterCode']), None)
+                desc_col = next((c for c in df.columns if c in ['RateTypeDescription', 'Rate Type', 'RateType', 'RegisterCode']), None)
                 val_col = next((c for c in df.columns if c in ['ProfileReadValue', 'Usage', 'Consumption']), None)
                 end_col = next((c for c in df.columns if c in ['EndDate', 'End Date', 'Interval End']), None)
                 time_col = end_col 
@@ -119,13 +119,10 @@ def load_and_clean_data(file):
         # --- NEW PARSING CAPABILITIES FALLBACK A (Silent failure handler) ---
         try:
             df2 = pd.read_csv(StringIO(content))
-            # Catch format 2 and other broad column names
             broad_map = {'Date/Time': 'Time', 'kWh': 'Usage_kWh'}
             df2.rename(columns=lambda x: broad_map.get(x, x), inplace=True)
             if 'Time' in df2.columns and 'Usage_kWh' in df2.columns:
-                # Catch format 3 (US formats & ambiguous dates)
                 df2['Time'] = pd.to_datetime(df2['Time'], format="mixed", dayfirst=True, errors='coerce')
-                # If everything failed to parse (NaT), try dayfirst=False explicitly
                 if df2['Time'].isna().all():
                     df2['Time'] = pd.to_datetime(df2['Time'], errors='coerce')
                 df2 = df2.dropna(subset=['Time']).set_index('Time').sort_index()
@@ -176,8 +173,8 @@ def run_simulation(df, system_kw, battery_kwh, export_limit_kw, region_yield):
     days = len(sim) // 24
     if days == 0: return sim
     
-    solar_series = np.tile(hourly_gen, days + 1)[:len(sim)]
-    sim['Solar_Gen_kWh'] = solar_series
+    # FIX: Map directly to timestamp hour to prevent midnight solar offset
+    sim['Solar_Gen_kWh'] = hourly_gen[sim.index.hour]
     
     sim['Battery_State'] = 0.0
     battery_charge = 0.0
@@ -243,8 +240,10 @@ def calculate_dcf(annual_savings, cost, years=20, financing_setup=None):
     npv = npf.npv(DISCOUNT_RATE, cash_flows)
     try:
         irr = npf.irr(cash_flows)
+        if np.isnan(irr):
+            irr = 0.0
     except:
-        irr = 0
+        irr = 0.0
     
     # Valuation Uplift (Unlevered NPV used for asset valuation)
     unlevered_npv = npf.npv(DISCOUNT_RATE, [-cost] + [annual_savings * ((1 + RES_INFLATION) ** (i-1)) for i in range(1, years+1)])
@@ -286,14 +285,19 @@ def calc_commercial_economics(sim_df, system_cost, finance_config=None):
 def calc_residential_economics(sim_df, system_cost, finance_config=None):
     if sim_df.empty: return {}
     
-    import_cost_orig = sim_df['Usage_kWh'].sum() * RETAIL_RATE_RES
-    import_cost_new = sim_df['Grid_Import_kWh'].sum() * RETAIL_RATE_RES
-    export_credit = sim_df['Grid_Export_kWh'].sum() * FEED_IN_RES
+    # Calculate exactly how many years of data we are looking at
+    days_in_data = len(sim_df) / 24
+    annual_multiplier = 365.25 / days_in_data if days_in_data > 0 else 1.0
+    
+    # Apply the multiplier so the totals reflect a single 12-month period
+    import_cost_orig = (sim_df['Usage_kWh'].sum() * RETAIL_RATE_RES) * annual_multiplier
+    import_cost_new = (sim_df['Grid_Import_kWh'].sum() * RETAIL_RATE_RES) * annual_multiplier
+    export_credit = (sim_df['Grid_Export_kWh'].sum() * FEED_IN_RES) * annual_multiplier
     
     new_bill = import_cost_new - export_credit
     savings = import_cost_orig - new_bill
     payback = system_cost / savings if savings > 0 else 99
-    bill_offset = (1 - (new_bill / import_cost_orig)) * 100
+    bill_offset = (1 - (new_bill / import_cost_orig)) * 100 if import_cost_orig > 0 else 0
     
     npv, irr, val_uplift, cashflows = calculate_dcf(savings, system_cost, years=20, financing_setup=finance_config)
     npv_warranty, _, _, _ = calculate_dcf(savings, system_cost, years=WARRANTY_PERIOD, financing_setup=finance_config)
@@ -355,23 +359,27 @@ def generate_ai_commentary(stats, mode):
 def create_pdf(metrics, mode, system_name, ai_text):
     """
     Generates a PDF Report. 
-    Fixes: Uses bytes() output for modern fpdf2 compatibility.
+    Fixes: Uses bytes() output for modern fpdf2 compatibility and latin-1 sanitization.
     """
+    safe_ai_text = str(ai_text).encode('latin-1', 'replace').decode('latin-1')
+    safe_sys_name = str(system_name).encode('latin-1', 'replace').decode('latin-1')
+    safe_mode = str(mode).encode('latin-1', 'replace').decode('latin-1')
+    
     pdf = FPDF()
     pdf.add_page()
     
     # Title
     pdf.set_font("Arial", 'B', 20)
-    pdf.cell(0, 15, f"SunScore {mode} Audit", 0, 1, 'C')
+    pdf.cell(0, 15, f"SunScore {safe_mode} Audit", 0, 1, 'C')
     
     # Executive Summary
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, f"Recommended Strategy: {system_name}", 0, 1)
+    pdf.cell(0, 10, f"Recommended Strategy: {safe_sys_name}", 0, 1)
     
     # AI Verdict Box
     pdf.set_font("Arial", 'I', 11)
     pdf.set_text_color(50, 50, 50)
-    pdf.multi_cell(0, 8, f"Auditor's Verdict:\n{ai_text}")
+    pdf.multi_cell(0, 8, f"Auditor's Verdict:\n{safe_ai_text}")
     pdf.ln(5)
     
     # The Numbers
@@ -412,7 +420,6 @@ def create_pdf(metrics, mode, system_name, ai_text):
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Generated by SunScore Analytics. This is a model, not a financial guarantee.", 0, 1, 'C')
     
-    # FIX: modern fpdf2 returns bytearray, simple bytes() conversion is robust
     return bytes(pdf.output())
 
 @st.cache_data
@@ -428,9 +435,6 @@ def generate_scenario_results(df, app_mode, is_financed, finance_config, sys_siz
         conf_str = f"{pkg['kw']}kW Solar"
         if pkg['bat'] > 0: conf_str += f" + {pkg['bat']}kWh Batt"
         
-        # --- IMPORTANT: KEY STANDARDIZATION ---
-        # We use strictly "Display Keys" (with spaces) for the Results DataFrame
-        # The PDF Generator and AI will use these exact keys.
         if app_mode == "Residential (Home)":
             econ = calc_residential_economics(sim_res, pkg['cost'], finance_config)
             results.append({
@@ -495,7 +499,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 📄 Client Report")
-    # Button logic is handled in the main loop to access results
 
     st.info("Upload CSV (NEM12 or Retailer) to begin.")
 
@@ -621,15 +624,14 @@ if uploaded_file is not None:
         # ---------------------------------------------------------------------
         with st.sidebar:
             if st.button("📝 Generate PDF Report"):
-                # We simply grab the top system from our Results DF
                 if not results_df.empty:
-                    best_sys = results_df.iloc[0]
+                    # FIX: Grab the user's selected system from Tab 2 instead of hardcoding row 0
+                    matched_rows = results_df[results_df['System'] == selected_sys_name]
+                    best_sys = matched_rows.iloc[0] if not matched_rows.empty else results_df.iloc[0]
                     
                     with st.spinner("AI is analyzing & writing report..."):
                         try:
-                            # 1. AI Text (Uses keys safely)
                             ai_verdict = generate_ai_commentary(best_sys, app_mode)
-                            # 2. PDF Creation (Uses keys safely + Fixed Binary Output)
                             pdf_data = create_pdf(best_sys, app_mode, best_sys['System'], ai_verdict)
                             
                             st.download_button(
