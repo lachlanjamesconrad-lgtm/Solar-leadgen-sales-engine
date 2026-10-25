@@ -62,7 +62,7 @@ def load_and_clean_data(file):
             try:
                 df = pd.read_csv(StringIO(content))
                 df.columns = df.columns.str.strip()
-                desc_col = next((c for c in df.columns if c in ['RateTypeDescription', 'Rate Type', 'RegisterCode']), None)
+                desc_col = next((c for c in df.columns if c in ['RateTypeDescription', 'Rate Type', 'RateType', 'RegisterCode']), None)
                 val_col = next((c for c in df.columns if c in ['ProfileReadValue', 'Usage', 'Consumption']), None)
                 time_col = next((c for c in df.columns if c in ['EndDate', 'End Date', 'Interval End']), None)
                 
@@ -94,13 +94,10 @@ def load_and_clean_data(file):
         # --- NEW PARSING CAPABILITIES FALLBACK A (Silent failure handler) ---
         try:
             df2 = pd.read_csv(StringIO(content))
-            # Catch format 2 and other broad column names
             broad_map = {'Date/Time': 'Time', 'kWh': 'Usage_kWh'}
             df2.rename(columns=lambda x: broad_map.get(x, x), inplace=True)
             if 'Time' in df2.columns and 'Usage_kWh' in df2.columns:
-                # Catch format 3 (US formats & ambiguous dates)
                 df2['Time'] = pd.to_datetime(df2['Time'], format="mixed", dayfirst=True, errors='coerce')
-                # If everything failed to parse (NaT), try dayfirst=False explicitly
                 if df2['Time'].isna().all():
                     df2['Time'] = pd.to_datetime(df2['Time'], errors='coerce')
                 df2 = df2.dropna(subset=['Time']).set_index('Time').sort_index()
@@ -150,8 +147,8 @@ def run_simulation(df, system_kw, battery_kwh, export_limit_kw, region_yield):
     days = len(sim) // 24
     if days == 0: return sim
     
-    solar_series = np.tile(hourly_gen, days + 1)[:len(sim)]
-    sim['Solar_Gen_kWh'] = solar_series
+    # FIX: Map directly to timestamp hour to prevent midnight solar offset
+    sim['Solar_Gen_kWh'] = hourly_gen[sim.index.hour]
     sim['Battery_State'] = 0.0
     battery_charge = 0.0
     grid_export, grid_import = [], []
@@ -202,20 +199,31 @@ def calculate_dcf(annual_savings, cost, years=20, financing_setup=None):
         cash_flows.append(current_year_net)
     
     npv = npf.npv(DISCOUNT_RATE, cash_flows)
-    irr = npf.irr(cash_flows) if cash_flows else 0
+    try:
+        irr = npf.irr(cash_flows) if cash_flows else 0.0
+        if np.isnan(irr):
+            irr = 0.0
+    except Exception:
+        irr = 0.0
+        
     unlevered_npv = npf.npv(DISCOUNT_RATE, [-cost] + [annual_savings * ((1 + RES_INFLATION) ** (i-1)) for i in range(1, years+1)])
     return npv, irr, unlevered_npv + cost, cash_flows
 
 def calc_residential_economics(sim_df, system_cost, finance_config=None):
     if sim_df.empty: return {}
-    import_cost_orig = sim_df['Usage_kWh'].sum() * RETAIL_RATE_RES
-    import_cost_new = sim_df['Grid_Import_kWh'].sum() * RETAIL_RATE_RES
-    export_credit = sim_df['Grid_Export_kWh'].sum() * FEED_IN_RES
+    
+    # FIX: Annualize based on exact number of days in uploaded CSV
+    days_in_data = len(sim_df) / 24
+    annual_multiplier = 365.25 / days_in_data if days_in_data > 0 else 1.0
+    
+    import_cost_orig = (sim_df['Usage_kWh'].sum() * RETAIL_RATE_RES) * annual_multiplier
+    import_cost_new = (sim_df['Grid_Import_kWh'].sum() * RETAIL_RATE_RES) * annual_multiplier
+    export_credit = (sim_df['Grid_Export_kWh'].sum() * FEED_IN_RES) * annual_multiplier
     
     new_bill = import_cost_new - export_credit
     savings = import_cost_orig - new_bill
     payback = system_cost / savings if savings > 0 else 99
-    bill_offset = (1 - (new_bill / import_cost_orig)) * 100
+    bill_offset = (1 - (new_bill / import_cost_orig)) * 100 if import_cost_orig > 0 else 0
     npv, irr, val_uplift, cashflows = calculate_dcf(savings, system_cost, years=20, financing_setup=finance_config)
     npv_warranty, _, _, _ = calculate_dcf(savings, system_cost, years=WARRANTY_PERIOD, financing_setup=finance_config)
     
@@ -229,14 +237,18 @@ def generate_ai_commentary(stats, mode):
     except: return "AI Connection Failed. Manual Verdict: Solid financials."
 
 def create_pdf(metrics, mode, system_name, ai_text):
+    # FIX: Sanitize strings to prevent FPDF latin-1 Unicode crashes
+    safe_ai_text = str(ai_text).encode('latin-1', 'replace').decode('latin-1')
+    safe_sys_name = str(system_name).encode('latin-1', 'replace').decode('latin-1')
+    
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 20)
     pdf.cell(0, 15, f"My Solar Plan | The Truth Audit", 0, 1, 'C')
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, f"Strategy Assessed: {system_name}", 0, 1)
+    pdf.cell(0, 10, f"Strategy Assessed: {safe_sys_name}", 0, 1)
     pdf.set_font("Arial", 'I', 11)
-    pdf.multi_cell(0, 8, f"Auditor's Verdict:\n{ai_text}")
+    pdf.multi_cell(0, 8, f"Auditor's Verdict:\n{safe_ai_text}")
     pdf.ln(5)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(100, 10, "Metric", 1); pdf.cell(0, 10, "Value", 1, 1)
@@ -277,7 +289,8 @@ def run_directional_simulation(df, system_kw, battery_kwh, export_limit_kw, regi
     days = len(sim) // 24
     if days == 0: return sim
     
-    sim['Solar_Gen_kWh'] = np.tile(hourly_gen, days + 1)[:len(sim)]
+    # FIX: Map directly to timestamp hour to prevent midnight solar offset
+    sim['Solar_Gen_kWh'] = hourly_gen[sim.index.hour]
     sim['Battery_State'] = 0.0
     battery_charge = 0.0
     grid_export, grid_import = [], []
