@@ -4,13 +4,11 @@ import numpy as np
 import plotly.graph_objects as go
 from supabase import create_client, Client
 
-
-
 if "payment" in st.query_params and st.query_params["payment"] == "success":
     st.success("🎉 Payment Successful! Your Engineering Audit is confirmed.")
     st.markdown("### Next Steps:")
-    st.write("We have received your $149 payment. To get started, please forward your Energex Smart Meter data and your solar quotes to **[Your Email Here]**.")
-    st.info("Haven't got your Energex data yet? Watch this 60-second video on how to download it: [Link to your Loom Video]")
+    st.write("We have received your $149 payment. To get started, please forward your Energex Smart Meter data and your solar quotes to **audits@sunscore.com.au**.")
+    st.info("Haven't got your Energex data yet? Log into your electricity retailer portal and request your 'NEM12 Smart Meter Interval Data' CSV file.")
     
     # Stop the rest of the app from loading so they don't see the calculator
     st.stop()
@@ -21,7 +19,7 @@ if "payment" in st.query_params and st.query_params["payment"] == "success":
 st.set_page_config(page_title="My Solar Plan | Free Simulator", page_icon="☀️", layout="wide")
 
 st.title("My Solar Plan")
-st.title("☀️ Free Solar Simulator")
+st.subheader("☀️ Free Solar Simulator")
 st.markdown("Discover your baseline solar potential. No math required.")
 
 # Initialize session state for the email gate
@@ -215,6 +213,6 @@ else:
     
     col3, col4 = st.columns(2)
     with col3:
-        st.link_button("Buy Independent Audit ($149) 🔍", "https://buy.stripe.com/test_link_placeholder", type="primary")
+        st.link_button("Buy Independent Audit ($149) 🔍", "https://buy.stripe.com/", type="primary")
     with col4:
         st.write("*(Redirects to secure checkout. You will upload your top 3 quotes and NEM12 CSV on the secure form following payment.)*")
